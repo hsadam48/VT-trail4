@@ -291,6 +291,8 @@ for numfloors in [(50, [8, 10, 12], [10, 6, 4]), (75, [10, 12, 14], [10, 5, 3])]
                                                 
                                     elif elevator.state == 'e':
                                         if elevator.queue[elevator.currentfloor - 1].empty():
+elif elevator.state == 'e':
+                                        if elevator.queue[elevator.currentfloor - 1].empty():
                                             if elevator.topfloor > elevator.currentfloor and elevator.passengers():
                                                 elevator.changestate('u')
                                                 elevator.reset()
@@ -305,12 +307,6 @@ for numfloors in [(50, [8, 10, 12], [10, 6, 4]), (75, [10, 12, 14], [10, 5, 3])]
                                                     elevator.opendoors()
                                                     elevator.stops += 1
                                             else:
-                                                elevator.count()
-                                                if elevator.counter == LOADINGTIME:
-                                                    person = elevator.queue[elevator.currentfloor - 1].get()
-                                                    person.floor = elevator.currentfloor
-                                                    elevator.reset()
- else:
                                                 if elevator.counter == LOADINGTIME:
                                                     person = elevator.queue[elevator.currentfloor - 1].get()
                                                     person.floor = elevator.currentfloor
