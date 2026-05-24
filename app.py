@@ -281,6 +281,11 @@ for numfloors in [(50, [8, 10, 12], [10, 6, 4]), (75, [10, 12, 14], [10, 5, 3])]
                                             elevator.count()
                                             if elevator.counter == DOORTIME:
                                                 elevator.closedoors()
+ elif elevator.state == 'u':
+                                        if not elevator.doors:
+                                            elevator.count()
+                                            if elevator.counter == DOORTIME:
+                                                elevator.closedoors()
                                                 elevator.reset()
                                         else:
                                             elevator.count()
@@ -290,8 +295,6 @@ for numfloors in [(50, [8, 10, 12], [10, 6, 4]), (75, [10, 12, 14], [10, 5, 3])]
                                                 elevator.changestate('e')
                                                 
                                     elif elevator.state == 'e':
-                                        if elevator.queue[elevator.currentfloor - 1].empty():
-elif elevator.state == 'e':
                                         if elevator.queue[elevator.currentfloor - 1].empty():
                                             if elevator.topfloor > elevator.currentfloor and elevator.passengers():
                                                 elevator.changestate('u')
