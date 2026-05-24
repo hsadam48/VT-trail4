@@ -2,795 +2,329 @@ from __future__ import annotations
 
 import io
 import math
-import random
-import heapq
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple
+import os
+import tempfile
+from dataclasses import dataclass
+from typing import Dict, List, Tuple
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle, Image
 
-
-st.set_page_config(
-    page_title="Practical Elevator Traffic Tool",
-    page_icon="🛗",
-    layout="wide",
-)
-
+# Set up page configuration
+st.set_page_config(page_title="VT Engineering Review Platform", page_icon="🛗", layout="wide")
 
 @dataclass
 class LiftBankInput:
     bank_name: str
     building_type: str
+    building_grade: str
     floors_served: int
+    total_travel_height_m: float
     population_served: int
+    population_per_floor: int
     number_of_lifts: int
     car_capacity_persons: int
     rated_speed_mps: float
     floor_height_m: float
+    door_type: str
+    door_clear_width_mm: int
     door_time_s: float
     passenger_transfer_time_s: float
     acceleration_mps2: float
     jerk_mps3: float
     main_terminal_floor: int = 0
-
+    sky_lobby_floor: int = 0
+    amenity_floor_numbers: str = ""
+    zoning_strategy: str = "Single Zone"
     passenger_lift_pit_depth_m: float = 2.0
     passenger_lift_overhead_m: float = 4.5
-
     service_lift_pit_depth_m: float = 2.2
     service_lift_overhead_m: float = 4.8
-
     fireman_lift_pit_depth_m: float = 3.5
     fireman_lift_overhead_m: float = 5.0
     fireman_lift_car_width_mm: int = 1400
     fireman_lift_car_depth_mm: int = 2200
     fireman_lift_door_clear_mm: int = 1100
 
+BUILDING_TYPES = ["Office", "Residential", "Hotel", "Hospital", "Mixed"]
+BUILDING_GRADES = ["Prestige / Corporate Office", "Mainstream / Speculative Office", "Luxury Residential", "Standard Residential", "Hotel 4-5 Star", "Hospital", "Mixed Use"]
+DOOR_TYPES = ["Center Opening", "Side Opening", "Telescopic", "Other"]
+ZONING_OPTIONS = ["Single Zone", "Low / High Rise Split", "Express / Sky Lobby", "Separate Service Zone", "Mixed-Use Separated Banks"]
 
-@dataclass
-class Passenger:
-    pid: int
-    arrival: float
-    origin: int
-    destination: int
-    direction: int
-    assigned_car: int | None = None
-    board_time: float | None = None
-    exit_time: float | None = None
-    wait_time: float | None = None
-    journey_time: float | None = None
+DEFAULT_BANKS = pd.DataFrame([{
+    "bank_name": "Tower A Passenger Lifts", "building_type": "Office", "building_grade": "Mainstream / Speculative Office",
+    "floors_served": 33, "total_travel_height_m": 108.8, "population_served": 963, "population_per_floor": 30,
+    "number_of_lifts": 4, "car_capacity_persons": 21, "rated_speed_mps": 4.0, "floor_height_m": 3.4,
+    "door_type": "Center Opening", "door_clear_width_mm": 1100, "door_time_s": 10.0, "passenger_transfer_time_s": 1.2,
+    "acceleration_mps2": 1.0, "jerk_mps3": 1.5, "main_terminal_floor": 0, "sky_lobby_floor": 0,
+    "amenity_floor_numbers": "", "zoning_strategy": "Single Zone", "passenger_lift_pit_depth_m": 2.0,
+    "passenger_lift_overhead_m": 4.5, "service_lift_pit_depth_m": 2.2, "service_lift_overhead_m": 4.8,
+    "fireman_lift_pit_depth_m": 3.5, "fireman_lift_overhead_m": 5.0, "fireman_lift_car_width_mm": 1400,
+    "fireman_lift_car_depth_mm": 2200, "fireman_lift_door_clear_mm": 1100,
+}])
 
-
-@dataclass(order=True)
-class Event:
-    time: float
-    event_type: str = field(compare=False)
-    passenger: Any = field(default=None, compare=False)
-
-
-BUILDING_TYPES = ["Office", "Residential", "Mixed"]
-
-DEFAULT_BANKS = pd.DataFrame([
-    {
-        "bank_name": "Tower A Passenger Lifts",
-        "building_type": "Office",
-        "floors_served": 33,
-        "population_served": 963,
-        "number_of_lifts": 4,
-        "car_capacity_persons": 21,
-        "rated_speed_mps": 4.0,
-        "floor_height_m": 3.4,
-        "door_time_s": 10.0,
-        "passenger_transfer_time_s": 1.2,
-        "acceleration_mps2": 1.0,
-        "jerk_mps3": 1.5,
-        "main_terminal_floor": 0,
-        "passenger_lift_pit_depth_m": 2.0,
-        "passenger_lift_overhead_m": 4.5,
-        "service_lift_pit_depth_m": 2.2,
-        "service_lift_overhead_m": 4.8,
-        "fireman_lift_pit_depth_m": 3.5,
-        "fireman_lift_overhead_m": 5.0,
-        "fireman_lift_car_width_mm": 1400,
-        "fireman_lift_car_depth_mm": 2200,
-        "fireman_lift_door_clear_mm": 1100,
-    },
-    {
-        "bank_name": "Tower B Passenger Lifts",
-        "building_type": "Office",
-        "floors_served": 37,
-        "population_served": 1077,
-        "number_of_lifts": 4,
-        "car_capacity_persons": 21,
-        "rated_speed_mps": 4.0,
-        "floor_height_m": 3.4,
-        "door_time_s": 10.0,
-        "passenger_transfer_time_s": 1.2,
-        "acceleration_mps2": 1.0,
-        "jerk_mps3": 1.5,
-        "main_terminal_floor": 0,
-        "passenger_lift_pit_depth_m": 2.0,
-        "passenger_lift_overhead_m": 4.5,
-        "service_lift_pit_depth_m": 2.2,
-        "service_lift_overhead_m": 4.8,
-        "fireman_lift_pit_depth_m": 3.5,
-        "fireman_lift_overhead_m": 5.0,
-        "fireman_lift_car_width_mm": 1400,
-        "fireman_lift_car_depth_mm": 2200,
-        "fireman_lift_door_clear_mm": 1100,
-    },
-])
-
-TRAFFIC_PROFILES: Dict[str, Dict[str, float | str]] = {
-    "Office Morning Up-Peak": {
-        "arrival_rate_per_sec": 0.25,
-        "incoming": 0.85,
-        "outgoing": 0.05,
-        "interfloor": 0.10,
-        "target_interval_s": 30.0,
-        "target_hc_percent": 12.0,
-        "applicable_to": "Office",
-        "description": "Morning office traffic from lobby to upper floors.",
-    },
-    "Office Lunch / Two-Way": {
-        "arrival_rate_per_sec": 0.30,
-        "incoming": 0.40,
-        "outgoing": 0.40,
-        "interfloor": 0.20,
-        "target_interval_s": 35.0,
-        "target_hc_percent": 11.0,
-        "applicable_to": "Office",
-        "description": "Lunch traffic with mixed up, down and inter-floor movement.",
-    },
-    "Residential Morning Down-Peak": {
-        "arrival_rate_per_sec": 0.18,
-        "incoming": 0.20,
-        "outgoing": 0.65,
-        "interfloor": 0.15,
-        "target_interval_s": 45.0,
-        "target_hc_percent": 7.5,
-        "applicable_to": "Residential",
-        "description": "Residential morning traffic from apartments to lobby/parking.",
-    },
-    "Residential Evening Up-Peak": {
-        "arrival_rate_per_sec": 0.18,
-        "incoming": 0.60,
-        "outgoing": 0.20,
-        "interfloor": 0.20,
-        "target_interval_s": 45.0,
-        "target_hc_percent": 7.5,
-        "applicable_to": "Residential",
-        "description": "Residential evening return traffic from lobby/parking to apartments.",
-    },
-    "Mixed-Use Balanced": {
-        "arrival_rate_per_sec": 0.28,
-        "incoming": 0.45,
-        "outgoing": 0.35,
-        "interfloor": 0.20,
-        "target_interval_s": 40.0,
-        "target_hc_percent": 9.0,
-        "applicable_to": "Mixed",
-        "description": "Mixed-use profile with balanced up/down and inter-floor movement.",
-    },
+TRAFFIC_PROFILES = {
+    "Office Morning Up-Peak": {"incoming": 0.85, "outgoing": 0.10, "interfloor": 0.05, "applicable_to": "Office"},
+    "Office Lunch / Two-Way": {"incoming": 0.40, "outgoing": 0.40, "interfloor": 0.20, "applicable_to": "Office"},
+    "Residential Morning Down-Peak": {"incoming": 0.20, "outgoing": 0.65, "interfloor": 0.15, "applicable_to": "Residential"},
+    "Residential Evening Up-Peak": {"incoming": 0.60, "outgoing": 0.20, "interfloor": 0.20, "applicable_to": "Residential"},
+    "Hotel Two-Way Guest Movement": {"incoming": 0.45, "outgoing": 0.35, "interfloor": 0.20, "applicable_to": "Hotel"},
+    "Mixed-Use Balanced": {"incoming": 0.45, "outgoing": 0.35, "interfloor": 0.20, "applicable_to": "Mixed"},
 }
 
+def benchmark_for(bank: LiftBankInput) -> Dict[str, float | str]:
+    grade = bank.building_grade
+    table = {
+        "Prestige / Corporate Office": (25, 30, 12, 15, 90, 120),
+        "Mainstream / Speculative Office": (30, 40, 11, 13, 90, 120),
+        "Luxury Residential": (45, 45, 6, 7, 120, 120),
+        "Standard Residential": (60, 60, 5, 7, 120, 120),
+        "Hotel 4-5 Star": (30, 35, 10, 12, 120, 120),
+        "Hospital": (35, 45, 10, 12, 120, 150),
+        "Mixed Use": (40, 45, 9, 11, 120, 130),
+    }
+    awt_ex, awt_acc, hc_min, hc_target, attd_ideal, attd_max = table.get(grade, table["Mixed Use"])
+    return {"awt_excellent": awt_ex, "awt_acceptable": awt_acc, "hc_min": hc_min, "hc_target": hc_target, "attd_ideal": attd_ideal, "attd_max": attd_max, "source": "CIBSE Guide D / ISO 8100-32 benchmark basis"}
 
 def scenario_is_applicable(building_type: str, scenario_name: str) -> bool:
-    scenario_type = str(TRAFFIC_PROFILES[scenario_name]["applicable_to"])
-    if building_type == "Mixed":
-        return True
-    return scenario_type == building_type or scenario_type == "Mixed"
+    applicable = TRAFFIC_PROFILES[scenario_name]["applicable_to"]
+    if building_type == "Mixed": return True
+    if building_type == "Hospital": return scenario_name in ["Hotel Two-Way Guest Movement", "Mixed-Use Balanced"]
+    return applicable == building_type or applicable == "Mixed"
 
+def clone_bank(bank: LiftBankInput, **changes) -> LiftBankInput:
+    data = bank.__dict__.copy(); data.update(changes); return LiftBankInput(**data)
 
 def calculate_flight_time(distance_m: float, v_max: float, acceleration: float, jerk: float) -> float:
-    if distance_m <= 0:
-        return 0.0
-    v_max = max(v_max, 0.1)
-    acceleration = max(acceleration, 0.1)
-    jerk = max(jerk, 0.1)
+    if distance_m <= 0: return 0.0
+    v_max, acceleration, jerk = max(v_max, .1), max(acceleration, .1), max(jerk, .1)
     distance_to_reach_speed = (v_max ** 2 / acceleration) + (v_max * (acceleration / jerk))
     if distance_m >= distance_to_reach_speed:
         return (distance_m / v_max) + (v_max / acceleration) + (acceleration / jerk)
     return 2 * math.sqrt(distance_m / acceleration) + (acceleration / jerk)
 
+def control_factor(control_method: str) -> Tuple[float, float]:
+    return {"Conventional": (1.00, .33), "Hybrid": (.93, .30), "DCS": (.88, .28)}.get(control_method, (1.00, .33))
 
-def estimated_min_overhead_m(speed_mps: float) -> float:
-    buffer_stroke_m = speed_mps ** 2 / (2 * 9.81)
-    return round((4200 + buffer_stroke_m * 1000 + 700) / 1000, 2)
+def door_efficiency_factor(bank: LiftBankInput) -> float:
+    factor = 1.0
+    if bank.door_clear_width_mm < 900: factor += .10
+    elif bank.door_clear_width_mm < 1000: factor += .05
+    elif bank.door_clear_width_mm >= 1100: factor -= .03
+    if bank.door_type == "Side Opening": factor += .04
+    elif bank.door_type == "Telescopic": factor += .06
+    return max(.90, factor)
 
+def zoning_efficiency_factor(bank: LiftBankInput) -> float:
+    if bank.zoning_strategy == "Single Zone":
+        if bank.floors_served > 50: return 1.08
+        if bank.floors_served > 35: return 1.04
+        return 1.00
+    return {"Low / High Rise Split": .92, "Express / Sky Lobby": .88, "Mixed-Use Separated Banks": .90, "Separate Service Zone": .95}.get(bank.zoning_strategy, 1.0)
 
-def clone_bank(bank: LiftBankInput, **changes) -> LiftBankInput:
-    data = bank.__dict__.copy()
-    data.update(changes)
-    return LiftBankInput(**data)
+def profile_pressure_factor(scenario_name: str) -> float:
+    p = TRAFFIC_PROFILES[scenario_name]
+    if float(p["incoming"]) >= .80 or float(p["outgoing"]) >= .60: return 1.08
+    if float(p["interfloor"]) >= .20: return 1.12
+    return 1.0
 
-
-def run_practical_traffic_check(bank: LiftBankInput, control_method: str, scenario_name: str) -> Dict[str, float | str]:
-    profile = TRAFFIC_PROFILES[scenario_name]
-    passenger_load = max(2.0, bank.car_capacity_persons * 0.80)
+def run_traffic(bank: LiftBankInput, control_method: str, scenario_name: str) -> Dict[str, float | str]:
+    passenger_load = max(2.0, bank.car_capacity_persons * .80)
     floors = max(1, bank.floors_served - 1)
-
-    incoming = float(profile["incoming"])
-    outgoing = float(profile["outgoing"])
-    interfloor = float(profile["interfloor"])
-
-    profile_pressure = 1.0
-    if incoming >= 0.80 or outgoing >= 0.60:
-        profile_pressure = 1.08
-    elif interfloor >= 0.20:
-        profile_pressure = 1.12
-
-    probable_stops = floors * (1 - (1 - 1 / floors) ** passenger_load)
-    highest_reversal_floor = floors - sum((i / floors) ** passenger_load for i in range(1, floors))
-
-    single_floor_time = calculate_flight_time(
-        bank.floor_height_m,
-        bank.rated_speed_mps,
-        bank.acceleration_mps2,
-        bank.jerk_mps3,
-    )
-
-    zoning_factor = 1.0
-    if floors > 35:
-        zoning_factor = 0.92
-    if floors > 50:
-        zoning_factor = 0.86
-
-    rtt = (
-        2 * highest_reversal_floor * single_floor_time
-        + probable_stops * bank.door_time_s
-        + 2 * passenger_load * bank.passenger_transfer_time_s
-    ) * profile_pressure * zoning_factor
-
-    if control_method == "Destination Control":
-        rtt *= 0.88
-        awt_factor = 0.28
-    else:
-        awt_factor = 0.33
-
+    stops = floors * (1 - (1 - 1 / floors) ** passenger_load)
+    highest_reversal = floors - sum((i / floors) ** passenger_load for i in range(1, floors))
+    avg_floor_height = bank.total_travel_height_m / max(1, bank.floors_served - 1) if bank.total_travel_height_m > 0 and bank.floors_served > 1 else bank.floor_height_m
+    tf = calculate_flight_time(avg_floor_height, bank.rated_speed_mps, bank.acceleration_mps2, bank.jerk_mps3)
+    rtt_base = (2 * highest_reversal * tf + stops * bank.door_time_s * door_efficiency_factor(bank) + 2 * passenger_load * bank.passenger_transfer_time_s)
+    rtt_base *= profile_pressure_factor(scenario_name) * zoning_efficiency_factor(bank)
+    if bank.sky_lobby_floor > 0 and bank.zoning_strategy == "Express / Sky Lobby":
+        rtt_base += calculate_flight_time(bank.sky_lobby_floor * avg_floor_height, bank.rated_speed_mps, bank.acceleration_mps2, bank.jerk_mps3)
+    if str(bank.amenity_floor_numbers).strip(): rtt_base *= 1.04
+    rtt_factor, awt_factor = control_factor(control_method)
+    rtt = rtt_base * rtt_factor
     interval = rtt / max(1, bank.number_of_lifts)
-    five_min_capacity = (300 * passenger_load * bank.number_of_lifts) / max(1.0, rtt)
-    hc_percent = (five_min_capacity / max(1, bank.population_served)) * 100
+    hc_pax = (300 * passenger_load * bank.number_of_lifts) / max(1.0, rtt)
+    hc_pct = hc_pax / max(1, bank.population_served) * 100
     awt = interval * awt_factor
+    avg_trip_distance = (bank.total_travel_height_m or (bank.floor_height_m * floors)) * .55
+    trip_time = calculate_flight_time(avg_trip_distance, bank.rated_speed_mps, bank.acceleration_mps2, bank.jerk_mps3)
+    attd = awt + trip_time + bank.door_time_s + bank.passenger_transfer_time_s * passenger_load * .35
+    return {"RTT (s)": round(rtt, 1), "Interval (s)": round(interval, 1), "AWT (s)": round(awt, 1), "ATTD (s)": round(attd, 1), "5HC (%)": round(hc_pct, 2), "5HC (pax)": round(hc_pax, 0), "Car Loading Used (%)": 80}
 
-    return {
-        "Lift Bank": bank.bank_name,
-        "Building Type": bank.building_type,
-        "Traffic Scenario": scenario_name,
-        "Control": control_method,
-        "RTT (s)": round(rtt, 1),
-        "Interval (s)": round(interval, 1),
-        "AWT Approx. (s)": round(awt, 1),
-        "Probable Stops": round(probable_stops, 1),
-        "5-min HC (persons)": round(five_min_capacity, 0),
-        "5-min HC (%)": round(hc_percent, 2),
-    }
+def pass_fail(bank: LiftBankInput, result: Dict[str, float | str]) -> str:
+    bm = benchmark_for(bank)
+    return "PASS" if float(result["AWT (s)"]) <= float(bm["awt_acceptable"]) and float(result["5HC (%)"]) >= float(bm["hc_min"]) and float(result["ATTD (s)"]) <= float(bm["attd_max"]) else "FAIL"
 
+def performance_comment(bank: LiftBankInput, result: Dict[str, float | str]) -> str:
+    bm = benchmark_for(bank); comments = []
+    if float(result["AWT (s)"]) > float(bm["awt_acceptable"]): comments.append("AWT exceeds benchmark.")
+    if float(result["5HC (%)"]) < float(bm["hc_min"]): comments.append("5-minute handling capacity is below benchmark.")
+    if float(result["ATTD (s)"]) > float(bm["attd_max"]): comments.append("Average time to destination exceeds benchmark.")
+    if bank.door_clear_width_mm < 1000: comments.append("Door clear width may restrict passenger flow.")
+    if bank.floors_served > 35 and bank.zoning_strategy == "Single Zone": comments.append("Consider zoning or split banks for this number of floors.")
+    return "Acceptable for preliminary review." if not comments else " ".join(comments)
 
-def pass_fail(row: Dict[str, float | str], profile: Dict[str, float | str]) -> str:
-    interval = float(row["Interval (s)"])
-    hc = float(row["5-min HC (%)"])
-    target_interval = float(profile["target_interval_s"])
-    target_hc = float(profile["target_hc_percent"])
-    return "PASS" if interval <= target_interval and hc >= target_hc else "FAIL"
+def practical_system_by_building(bank: LiftBankInput) -> str:
+    floors, pop, btype = bank.floors_served, bank.population_served, bank.building_type
+    if btype == "Office":
+        if floors <= 20 and pop <= 700: return "Conventional"
+        if floors <= 35 and pop <= 1200: return "Hybrid"
+        return "DCS"
+    if btype == "Residential":
+        if floors <= 25 and pop <= 800: return "Conventional"
+        if floors <= 45 and pop <= 1500: return "Hybrid"
+        return "DCS"
+    if btype == "Hotel": return "Hybrid" if floors <= 20 and pop <= 700 else "DCS"
+    if btype == "Hospital": return "DCS"
+    if btype == "Mixed": return "Hybrid" if floors <= 25 and pop <= 900 else "DCS"
+    return "Hybrid"
 
-
-def find_solution_for_scenario(bank: LiftBankInput, scenario_name: str) -> Dict[str, str | float | int]:
-    profile = TRAFFIC_PROFILES[scenario_name]
-    current = run_practical_traffic_check(bank, "Conventional", scenario_name)
-    if pass_fail(current, profile) == "PASS":
-        return {
-            "Lift Bank": bank.bank_name,
-            "Traffic Scenario": scenario_name,
-            "Current Result": "PASS",
-            "Minimum Practical Solution": "No change required.",
-            "Recommended Lifts": bank.number_of_lifts,
-            "Recommended Capacity": bank.car_capacity_persons,
-            "Recommended Speed": bank.rated_speed_mps,
-            "Recommended Control": "Conventional",
-            "Recommended Zoning": "Current zoning acceptable",
-            "Result After Recommendation": "PASS",
-        }
-
+def solve_recommendation(bank: LiftBankInput, scenario_name: str) -> Dict[str, str | int | float]:
+    recommended_system = practical_system_by_building(bank)
+    current = run_traffic(bank, recommended_system, scenario_name)
+    if pass_fail(bank, current) == "PASS":
+        return {"Lift Bank": bank.bank_name, "Scenario": scenario_name, "Result": "PASS", "Recommendation": f"Use {recommended_system}. Existing {bank.number_of_lifts} lifts, {bank.car_capacity_persons} persons, {bank.rated_speed_mps} m/s are acceptable."}
+    lift_options = range(bank.number_of_lifts, min(bank.number_of_lifts + 8, 16) + 1)
     capacity_options = sorted(set([bank.car_capacity_persons, 13, 16, 20, 21, 24, 26, 33, 40]))
     speed_options = sorted(set([bank.rated_speed_mps, 1.75, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 7.0, 8.0]))
-    lift_options = list(range(bank.number_of_lifts, min(bank.number_of_lifts + 8, 16) + 1))
-    control_options = ["Conventional", "Destination Control"]
-
-    # Practical priority order:
-    # 1 destination control
-    # 2 add lifts
-    # 3 increase capacity
-    # 4 increase speed
-    # 5 combined optimized search
-
     candidates = []
-
-    def add_candidate(test_bank: LiftBankInput, control: str, label: str):
-        result = run_practical_traffic_check(test_bank, control, scenario_name)
-        if pass_fail(result, profile) == "PASS":
-            added_lifts = test_bank.number_of_lifts - bank.number_of_lifts
-            added_capacity = test_bank.car_capacity_persons - bank.car_capacity_persons
-            added_speed = test_bank.rated_speed_mps - bank.rated_speed_mps
-            score = (
-                added_lifts * 100
-                + max(0, added_capacity) * 8
-                + max(0, added_speed) * 15
-                + (8 if control == "Destination Control" else 0)
-            )
-            candidates.append((score, test_bank, control, label, result))
-
-    # Try only control system change
-    add_candidate(bank, "Destination Control", "Use destination control system.")
-
-    # Try adding lifts only
-    for lifts in lift_options:
-        add_candidate(clone_bank(bank, number_of_lifts=lifts), "Conventional", f"Increase number of lifts to {lifts}.")
-
-    # Try increasing capacity only
-    for cap in capacity_options:
-        if cap >= bank.car_capacity_persons:
-            add_candidate(clone_bank(bank, car_capacity_persons=cap), "Conventional", f"Increase car capacity to {cap} persons.")
-
-    # Try increasing speed only
-    for spd in speed_options:
-        if spd >= bank.rated_speed_mps:
-            add_candidate(clone_bank(bank, rated_speed_mps=spd), "Conventional", f"Increase speed to {spd} m/s.")
-
-    # Try combined realistic combinations
     for lifts in lift_options:
         for cap in capacity_options:
-            if cap < bank.car_capacity_persons:
-                continue
-            for spd in speed_options:
-                if spd < bank.rated_speed_mps:
-                    continue
-                for control in control_options:
-                    test_bank = clone_bank(
-                        bank,
-                        number_of_lifts=lifts,
-                        car_capacity_persons=cap,
-                        rated_speed_mps=spd,
-                    )
-                    zoning_note = "Apply zoning/sectoring" if test_bank.floors_served > 35 else "Current zoning acceptable"
-                    label = (
-                        f"Use {lifts} lifts, {cap} persons capacity, {spd} m/s speed, "
-                        f"{control}, {zoning_note}."
-                    )
-                    add_candidate(test_bank, control, label)
-
+            if cap < bank.car_capacity_persons: continue
+            for speed in speed_options:
+                if speed < bank.rated_speed_mps: continue
+                for control in ["Conventional", "Hybrid", "DCS"]:
+                    for zoning in ZONING_OPTIONS:
+                        tb = clone_bank(bank, number_of_lifts=lifts, car_capacity_persons=cap, rated_speed_mps=speed, zoning_strategy=zoning)
+                        result = run_traffic(tb, control, scenario_name)
+                        if pass_fail(tb, result) == "PASS":
+                            score = (lifts-bank.number_of_lifts)*100 + (cap-bank.car_capacity_persons)*8 + (speed-bank.rated_speed_mps)*15 + (0 if control==recommended_system else 12) + (0 if zoning==bank.zoning_strategy else 20)
+                            candidates.append((score, lifts, cap, speed, control, zoning))
     if not candidates:
-        return {
-            "Lift Bank": bank.bank_name,
-            "Traffic Scenario": scenario_name,
-            "Current Result": "FAIL",
-            "Minimum Practical Solution": "No solution found within practical search range. Consider re-zoning, separate low/high rise banks, or specialist traffic study.",
-            "Recommended Lifts": "Review",
-            "Recommended Capacity": "Review",
-            "Recommended Speed": "Review",
-            "Recommended Control": "Review",
-            "Recommended Zoning": "Separate zoning required",
-            "Result After Recommendation": "FAIL",
-        }
+        return {"Lift Bank": bank.bank_name, "Scenario": scenario_name, "Result": "FAIL", "Recommendation": "Traffic not solved within practical search range. Use separate zoning/sectoring, split low/high-rise banks, or request specialist VT traffic study."}
+    _, lifts, cap, speed, control, zoning = sorted(candidates, key=lambda x: x[0])[0]
+    return {"Lift Bank": bank.bank_name, "Scenario": scenario_name, "Result": "FAIL", "Recommendation": f"Use {control}: {lifts} lifts, {cap} persons, {speed} m/s, zoning: {zoning}."}
 
-    candidates.sort(key=lambda x: x[0])
-    _, best_bank, best_control, label, best_result = candidates[0]
-
-    zoning = "Apply zoning/sectoring" if best_bank.floors_served > 35 else "Current zoning acceptable"
-
-    return {
-        "Lift Bank": bank.bank_name,
-        "Traffic Scenario": scenario_name,
-        "Current Result": "FAIL",
-        "Minimum Practical Solution": label,
-        "Recommended Lifts": best_bank.number_of_lifts,
-        "Recommended Capacity": best_bank.car_capacity_persons,
-        "Recommended Speed": best_bank.rated_speed_mps,
-        "Recommended Control": best_control,
-        "Recommended Zoning": zoning,
-        "Result After Recommendation": pass_fail(best_result, profile),
-    }
-
-
-def final_recommendations_for_bank(bank: LiftBankInput) -> pd.DataFrame:
-    rows = []
-    for scenario_name in TRAFFIC_PROFILES:
-        if scenario_is_applicable(bank.building_type, scenario_name):
-            rows.append(find_solution_for_scenario(bank, scenario_name))
+def build_analysis_rows(banks: List[LiftBankInput]) -> pd.DataFrame:
+    rows=[]
+    for bank in banks:
+        for scenario in TRAFFIC_PROFILES:
+            if not scenario_is_applicable(bank.building_type, scenario): continue
+            for control in ["Conventional", "Hybrid", "DCS"]:
+                result = run_traffic(bank, control, scenario); bm=benchmark_for(bank)
+                rows.append({"Lift Bank": bank.bank_name, "Building Type": bank.building_type, "Grade": bank.building_grade, "Scenario": scenario, "Control": control, **result, "AWT Benchmark (s)": bm["awt_acceptable"], "5HC Min Benchmark (%)": bm["hc_min"], "ATTD Max Benchmark (s)": bm["attd_max"], "Result": pass_fail(bank, result), "Comment": performance_comment(bank, result)})
     return pd.DataFrame(rows)
 
+def build_recommendation_rows(banks: List[LiftBankInput]) -> pd.DataFrame:
+    return pd.DataFrame([solve_recommendation(bank, scenario) for bank in banks for scenario in TRAFFIC_PROFILES if scenario_is_applicable(bank.building_type, scenario)])
 
-def fire_lift_practical_check(bank: LiftBankInput) -> Dict[str, str | int | float]:
-    stretcher_depth_ok = bank.fireman_lift_car_depth_mm >= 2134
-    car_width_ok = bank.fireman_lift_car_width_mm >= 1400
-    door_ok = bank.fireman_lift_door_clear_mm >= 1100
-    pit_ok = bank.fireman_lift_pit_depth_m >= 3.5
-    min_oh = estimated_min_overhead_m(bank.rated_speed_mps)
-    oh_ok = bank.fireman_lift_overhead_m >= min_oh
-    status = "PASS" if all([stretcher_depth_ok, car_width_ok, door_ok, pit_ok, oh_ok]) else "FAIL"
+def build_benchmark_rows(banks: List[LiftBankInput]) -> pd.DataFrame:
+    rows=[]
+    for bank in banks:
+        bm=benchmark_for(bank)
+        rows.append({"Lift Bank": bank.bank_name, "Building Grade": bank.building_grade, "AWT Excellent (s)": bm["awt_excellent"], "AWT Acceptable (s)": bm["awt_acceptable"], "5HC Min (%)": bm["hc_min"], "5HC Target (%)": bm["hc_target"], "ATTD Ideal (s)": bm["attd_ideal"], "ATTD Max (s)": bm["attd_max"], "Car Loading Used": "80% of rated capacity", "Benchmark Basis": bm["source"]})
+    return pd.DataFrame(rows)
 
-    return {
-        "Lift Bank": bank.bank_name,
-        "Fireman Lift Car W x D (mm)": f"{bank.fireman_lift_car_width_mm} x {bank.fireman_lift_car_depth_mm}",
-        "Door Clear Opening (mm)": bank.fireman_lift_door_clear_mm,
-        "Fireman Pit Depth (m)": bank.fireman_lift_pit_depth_m,
-        "Fireman OH Provided (m)": bank.fireman_lift_overhead_m,
-        "Estimated Min OH (m)": min_oh,
-        "Width Check": "PASS" if car_width_ok else "FAIL",
-        "Stretcher Depth Check": "PASS" if stretcher_depth_ok else "FAIL",
-        "Door Check": "PASS" if door_ok else "FAIL",
-        "Pit Check": "PASS" if pit_ok else "FAIL",
-        "OH Check": "PASS" if oh_ok else "FAIL",
-        "Final Result": status,
-    }
+def clean_input_df(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.dropna(subset=["bank_name"]).copy()
+    for col, default, opts in [("building_type","Office",BUILDING_TYPES),("building_grade","Mainstream / Speculative Office",BUILDING_GRADES),("door_type","Center Opening",DOOR_TYPES),("zoning_strategy","Single Zone",ZONING_OPTIONS)]:
+        df[col] = df[col].fillna(default); df[col] = df[col].where(df[col].isin(opts), default)
+    int_cols = ["floors_served","population_served","population_per_floor","number_of_lifts","car_capacity_persons","door_clear_width_mm","main_terminal_floor","sky_lobby_floor","fireman_lift_car_width_mm","fireman_lift_car_depth_mm","fireman_lift_door_clear_mm"]
+    float_cols = ["total_travel_height_m","rated_speed_mps","floor_height_m","door_time_s","passenger_transfer_time_s","acceleration_mps2","jerk_mps3","passenger_lift_pit_depth_m","passenger_lift_overhead_m","service_lift_pit_depth_m","service_lift_overhead_m","fireman_lift_pit_depth_m","fireman_lift_overhead_m"]
+    for col in int_cols: df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+    for col in float_cols: df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype(float)
+    df["amenity_floor_numbers"] = df["amenity_floor_numbers"].fillna("").astype(str)
+    return df
 
+def dataframe_to_pdf_table(df: pd.DataFrame, max_rows: int = 45):
+    styles=getSampleStyleSheet(); cell=ParagraphStyle("Cell", parent=styles["Normal"], fontSize=6.5, leading=8); head=ParagraphStyle("Header", parent=styles["Normal"], fontSize=6.5, leading=8, textColor=colors.white, fontName="Helvetica-Bold")
+    clean=df.head(max_rows).copy().fillna("")
+    data=[[Paragraph(str(c), head) for c in clean.columns]] + [[Paragraph(str(v), cell) for v in row] for row in clean.astype(str).values.tolist()]
+    tbl=Table(data, colWidths=[780/max(1,len(clean.columns))]*len(clean.columns))
+    tbl.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#1E3A8A")),("GRID",(0,0),(-1,-1),0.25,colors.HexColor("#CBD5E1")),("PADDING",(0,0),(-1,-1),2),("VALIGN",(0,0),(-1,-1),"MIDDLE")]))
+    return tbl
 
-def shaft_practical_check(bank: LiftBankInput) -> Dict[str, str | int | float]:
-    estimated_car_width = 900 + bank.car_capacity_persons * 45
-    estimated_car_depth = 1100 + bank.car_capacity_persons * 55
-    estimated_single_shaft_width = estimated_car_width + 900
-    estimated_total_core_width = estimated_single_shaft_width * bank.number_of_lifts + 600
-    estimated_clear_depth = estimated_car_depth + 900
-    min_oh = estimated_min_overhead_m(bank.rated_speed_mps)
+def save_uploaded_image(image_bytes, image_name):
+    if not image_bytes or not image_name: return None
+    suffix=os.path.splitext(image_name)[1] or ".png"; tmp=tempfile.NamedTemporaryFile(delete=False, suffix=suffix); tmp.write(image_bytes); tmp.flush(); tmp.close(); return tmp.name
 
-    passenger_pit_status = "PASS" if bank.passenger_lift_pit_depth_m >= 1.6 else "FAIL"
-    passenger_oh_status = "PASS" if bank.passenger_lift_overhead_m >= min_oh else "FAIL"
+def create_pdf(project_name, project_address, prepared_by, logo_bytes, logo_name, photo_bytes, photo_name, input_df, analysis_df, rec_df, bm_df) -> bytes:
+    buffer=io.BytesIO(); doc=SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=25, leftMargin=25, topMargin=30, bottomMargin=30)
+    styles=getSampleStyleSheet(); title=ParagraphStyle("Title", parent=styles["Title"], fontSize=18, textColor=colors.HexColor("#0F172A"), alignment=1); sub=ParagraphStyle("Sub", parent=styles["Normal"], fontSize=10, textColor=colors.HexColor("#475569"), alignment=1); sec=ParagraphStyle("Sec", parent=styles["Heading2"], fontSize=11, textColor=colors.HexColor("#1E3A8A"), spaceBefore=10, spaceAfter=5)
+    elements=[]; logo=save_uploaded_image(logo_bytes, logo_name); photo=save_uploaded_image(photo_bytes, photo_name)
+    if logo: elements += [Image(logo, width=110, height=55), Spacer(1,10)]
+    elements += [Paragraph("Vertical Transportation Engineering Review", title), Spacer(1,8), Paragraph(f"<b>Project:</b> {project_name}", sub), Paragraph(f"<b>Address:</b> {project_address or '-'}", sub), Paragraph(f"<b>Prepared By:</b> {prepared_by}", sub), Spacer(1,14)]
+    if photo: elements += [Image(photo, width=360, height=190), Spacer(1,14)]
+    elements += [Paragraph("Benchmark basis: CIBSE Guide D / ISO 8100-32 style target metrics used for preliminary comparison.", sub), Paragraph("Note: final traffic analysis must be verified by elevator specialist/manufacturer.", sub), Spacer(1,18), Paragraph("Tower & Lift Inputs", sec), dataframe_to_pdf_table(input_df), Paragraph("Benchmark Targets", sec), dataframe_to_pdf_table(bm_df), Paragraph("Result Recommendations", sec), dataframe_to_pdf_table(rec_df), Paragraph("Detailed Analysis", sec), dataframe_to_pdf_table(analysis_df)]
+    doc.build(elements); buffer.seek(0); return buffer.getvalue()
 
-    service_pit_status = "PASS" if bank.service_lift_pit_depth_m >= 1.8 else "FAIL"
-    service_oh_status = "PASS" if bank.service_lift_overhead_m >= min_oh else "FAIL"
+def init_state():
+    defaults={"page":1,"project_name":"Radiant Tower","project_address":"","prepared_by":"ATGC Engineering","logo_bytes":None,"logo_name":None,"project_photo_bytes":None,"project_photo_name":None,"input_df":DEFAULT_BANKS.copy()}
+    for k,v in defaults.items():
+        if k not in st.session_state: st.session_state[k]=v
 
-    fireman_pit_status = "PASS" if bank.fireman_lift_pit_depth_m >= 3.5 else "FAIL"
-    fireman_oh_status = "PASS" if bank.fireman_lift_overhead_m >= min_oh else "FAIL"
+def go_to(page:int): st.session_state.page=page; st.rerun()
 
-    final = "PASS" if all([
-        passenger_pit_status == "PASS",
-        passenger_oh_status == "PASS",
-        service_pit_status == "PASS",
-        service_oh_status == "PASS",
-        fireman_pit_status == "PASS",
-        fireman_oh_status == "PASS",
-    ]) else "FAIL"
+def page_header(step:int): st.caption({1:"Step 1 of 3 — Project Information",2:"Step 2 of 3 — Tower & Lift Engineering Inputs",3:"Step 3 of 3 — Benchmarks, Results & Recommendations"}[step])
 
-    return {
-        "Lift Bank": bank.bank_name,
-        "Estimated Car W x D (mm)": f"{int(estimated_car_width)} x {int(estimated_car_depth)}",
-        "Estimated Bank Width (mm)": int(estimated_total_core_width),
-        "Estimated Shaft Depth (mm)": int(estimated_clear_depth),
-        "Estimated Min OH (m)": min_oh,
-        "Passenger Pit Depth (m)": bank.passenger_lift_pit_depth_m,
-        "Passenger OH Height (m)": bank.passenger_lift_overhead_m,
-        "Passenger Pit Result": passenger_pit_status,
-        "Passenger OH Result": passenger_oh_status,
-        "Service Lift Pit Depth (m)": bank.service_lift_pit_depth_m,
-        "Service Lift OH Height (m)": bank.service_lift_overhead_m,
-        "Service Pit Result": service_pit_status,
-        "Service OH Result": service_oh_status,
-        "Fireman Lift Pit Depth (m)": bank.fireman_lift_pit_depth_m,
-        "Fireman Lift OH Height (m)": bank.fireman_lift_overhead_m,
-        "Fireman Pit Result": fireman_pit_status,
-        "Fireman OH Result": fireman_oh_status,
-        "Final Result": final,
-    }
-
-
-class PracticalElevatorSimulation:
-    def __init__(self, bank: LiftBankInput, profile: Dict[str, float | str], horizon: int, seed: int = 42):
-        self.bank = bank
-        self.profile = profile
-        self.horizon = horizon
-        self.rng = random.Random(seed)
-        self.np_rng = np.random.default_rng(seed)
-        self.events: List[Event] = []
-        self.completed: List[Passenger] = []
-        self.car_floors = [bank.main_terminal_floor] * max(1, bank.number_of_lifts)
-        self.car_available_at = [0.0] * max(1, bank.number_of_lifts)
-
-    def generate_passengers(self) -> None:
-        rate = float(self.profile["arrival_rate_per_sec"])
-        now = 0.0
-        pid = 1
-        floors = list(range(0, max(2, self.bank.floors_served)))
-
-        while now < self.horizon:
-            now += float(self.np_rng.exponential(1.0 / max(rate, 0.001)))
-            if now >= self.horizon:
-                break
-            x = self.rng.random()
-            incoming = float(self.profile["incoming"])
-            outgoing = float(self.profile["outgoing"])
-            if x < incoming:
-                origin = self.bank.main_terminal_floor
-                destination = self.rng.choice([f for f in floors if f != origin])
-            elif x < incoming + outgoing:
-                origin = self.rng.choice([f for f in floors if f != self.bank.main_terminal_floor])
-                destination = self.bank.main_terminal_floor
-            else:
-                origin = self.rng.choice(floors)
-                destination = self.rng.choice(floors)
-                while destination == origin:
-                    destination = self.rng.choice(floors)
-            direction = 1 if destination > origin else -1
-            heapq.heappush(self.events, Event(now, "PASSENGER", passenger=Passenger(pid, now, origin, destination, direction)))
-            pid += 1
-
-    def select_best_car(self, passenger: Passenger) -> int:
-        best_car = 0
-        best_eta = float("inf")
-        for idx, current_floor in enumerate(self.car_floors):
-            available_at = self.car_available_at[idx]
-            travel_to_origin = calculate_flight_time(
-                abs(passenger.origin - current_floor) * self.bank.floor_height_m,
-                self.bank.rated_speed_mps,
-                self.bank.acceleration_mps2,
-                self.bank.jerk_mps3,
-            )
-            eta = max(passenger.arrival, available_at) + travel_to_origin
-            if eta < best_eta:
-                best_eta = eta
-                best_car = idx
-        return best_car
-
-    def run(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        self.generate_passengers()
-        while self.events:
-            event = heapq.heappop(self.events)
-            p: Passenger = event.passenger
-            car = self.select_best_car(p)
-            p.assigned_car = car + 1
-            start_time = max(p.arrival, self.car_available_at[car])
-            time_to_origin = calculate_flight_time(
-                abs(p.origin - self.car_floors[car]) * self.bank.floor_height_m,
-                self.bank.rated_speed_mps,
-                self.bank.acceleration_mps2,
-                self.bank.jerk_mps3,
-            )
-            board_time = start_time + time_to_origin + self.bank.door_time_s / 2
-            trip_time = calculate_flight_time(
-                abs(p.destination - p.origin) * self.bank.floor_height_m,
-                self.bank.rated_speed_mps,
-                self.bank.acceleration_mps2,
-                self.bank.jerk_mps3,
-            )
-            exit_time = board_time + trip_time + self.bank.door_time_s / 2 + self.bank.passenger_transfer_time_s
-
-            p.board_time = round(board_time, 2)
-            p.exit_time = round(exit_time, 2)
-            p.wait_time = round(board_time - p.arrival, 2)
-            p.journey_time = round(exit_time - p.arrival, 2)
-            self.car_floors[car] = p.destination
-            self.car_available_at[car] = exit_time
-            self.completed.append(p)
-
-        passenger_df = pd.DataFrame([p.__dict__ for p in self.completed])
-        if passenger_df.empty:
-            return passenger_df, pd.DataFrame([{"Message": "No passengers generated. Increase horizon or arrival rate."}])
-        summary_df = pd.DataFrame([{
-            "Passengers Completed": len(passenger_df),
-            "Mean Waiting Time (s)": round(passenger_df["wait_time"].mean(), 1),
-            "90th Percentile Waiting Time (s)": round(passenger_df["wait_time"].quantile(0.9), 1),
-            "Mean Journey Time (s)": round(passenger_df["journey_time"].mean(), 1),
-            "Max Waiting Time (s)": round(passenger_df["wait_time"].max(), 1),
-        }])
-        return passenger_df, summary_df
-
-
-def dataframe_to_pdf_table(df: pd.DataFrame, max_rows: int = 35):
-    styles = getSampleStyleSheet()
-    cell_style = ParagraphStyle("Cell", parent=styles["Normal"], fontSize=7, leading=8)
-    header_style = ParagraphStyle("Header", parent=styles["Normal"], fontSize=7, leading=8, textColor=colors.white, fontName="Helvetica-Bold")
-    clean_df = df.head(max_rows).copy().fillna("")
-    header = [Paragraph(str(col), header_style) for col in clean_df.columns]
-    rows = [[Paragraph(str(value), cell_style) for value in row] for row in clean_df.values.tolist()]
-    col_width = 780 / max(1, len(clean_df.columns))
-    table = Table([header] + rows, colWidths=[col_width] * len(clean_df.columns))
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E3A8A")),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CBD5E1")),
-        ("PADDING", (0, 0), (-1, -1), 3),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-    ]))
-    return table
-
-
-def create_pdf_report(project_name, prepared_by, input_df, results_df, recommendations_df, fire_df, shaft_df, simulation_summary_df=None) -> bytes:
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=25, leftMargin=25, topMargin=30, bottomMargin=30)
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("TitleStyle", parent=styles["Title"], fontSize=15, textColor=colors.HexColor("#0F172A"), alignment=0)
-    subtitle_style = ParagraphStyle("SubtitleStyle", parent=styles["Normal"], fontSize=8, textColor=colors.HexColor("#475569"))
-    section_style = ParagraphStyle("SectionStyle", parent=styles["Heading2"], fontSize=10, textColor=colors.HexColor("#1E3A8A"), spaceBefore=10, spaceAfter=5)
-
-    elements = [
-        Paragraph("Practical Elevator Traffic Review Report", title_style),
-        Paragraph(f"Project: {project_name}", subtitle_style),
-        Paragraph(f"Prepared By: {prepared_by}", subtitle_style),
-        Paragraph("Purpose: preliminary review, option comparison, and coordination support.", subtitle_style),
-        Paragraph("Note: final traffic results, fire lift compliance and shaft sizes must be verified by the elevator specialist.", subtitle_style),
-        Spacer(1, 8),
-        Paragraph("1. Project Inputs", section_style),
-        dataframe_to_pdf_table(input_df),
-        Paragraph("2. Practical Traffic Results - PASS / FAIL", section_style),
-        dataframe_to_pdf_table(results_df),
-        Paragraph("3. Final Recommendations", section_style),
-        dataframe_to_pdf_table(recommendations_df),
-        Paragraph("4. Fireman Lift Preliminary Check", section_style),
-        dataframe_to_pdf_table(fire_df),
-        Paragraph("5. Separate Pit / Overhead Review", section_style),
-        dataframe_to_pdf_table(shaft_df),
-    ]
-    if simulation_summary_df is not None and not simulation_summary_df.empty:
-        elements.extend([
-            Paragraph("6. Passenger Simulation Summary", section_style),
-            dataframe_to_pdf_table(simulation_summary_df),
-        ])
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
-def build_excel_report(input_df, results_df, recommendations_df, fire_df, shaft_df, simulation_summary_df, passenger_df) -> bytes:
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        input_df.to_excel(writer, sheet_name="Inputs", index=False)
-        results_df.to_excel(writer, sheet_name="PASS FAIL Results", index=False)
-        recommendations_df.to_excel(writer, sheet_name="Final Recommendations", index=False)
-        fire_df.to_excel(writer, sheet_name="Fireman Lift Check", index=False)
-        shaft_df.to_excel(writer, sheet_name="Pit OH Separate Check", index=False)
-        if simulation_summary_df is not None and not simulation_summary_df.empty:
-            simulation_summary_df.to_excel(writer, sheet_name="Simulation Summary", index=False)
-        if passenger_df is not None and not passenger_df.empty:
-            passenger_df.head(5000).to_excel(writer, sheet_name="Passenger Logs", index=False)
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
-st.title("🛗 Practical Elevator Traffic Review Tool")
-st.caption("Project-oriented tool for quick lift traffic review, shaft coordination, fireman lift checks, recommendations, and passenger simulation.")
-
-with st.sidebar:
-    st.header("Project")
-    project_name = st.text_input("Project Name", "Radiant Tower")
-    prepared_by = st.text_input("Prepared By", "ATGC Engineering")
-    st.header("Simulation")
-    sim_scenario_name = st.selectbox("Simulation Scenario", list(TRAFFIC_PROFILES.keys()))
-    st.info(str(TRAFFIC_PROFILES[sim_scenario_name]["description"]))
-    sim_horizon = st.number_input("Simulation Duration (seconds)", min_value=300, max_value=7200, value=1200, step=300)
-    seed = st.number_input("Random Seed", min_value=1, max_value=999999, value=42, step=1)
-
-st.markdown("## 1. Lift Bank Inputs")
-st.write("Building type is selected from Office, Residential, or Mixed. Pit depth and overhead are separated for passenger, service, and fireman lifts.")
-
-column_config = {
-    "building_type": st.column_config.SelectboxColumn(
-        "building_type",
-        help="Select building type",
-        options=BUILDING_TYPES,
-        required=True,
-    )
-}
-
-input_df = st.data_editor(DEFAULT_BANKS, num_rows="dynamic", use_container_width=True, hide_index=True, column_config=column_config)
-input_df = input_df.dropna(subset=["bank_name"]).copy()
-input_df["building_type"] = input_df["building_type"].where(input_df["building_type"].isin(BUILDING_TYPES), "Office")
-
-int_cols = [
-    "floors_served",
-    "population_served",
-    "number_of_lifts",
-    "car_capacity_persons",
-    "main_terminal_floor",
-    "fireman_lift_car_width_mm",
-    "fireman_lift_car_depth_mm",
-    "fireman_lift_door_clear_mm",
-]
-float_cols = [
-    "rated_speed_mps",
-    "floor_height_m",
-    "door_time_s",
-    "passenger_transfer_time_s",
-    "acceleration_mps2",
-    "jerk_mps3",
-    "passenger_lift_pit_depth_m",
-    "passenger_lift_overhead_m",
-    "service_lift_pit_depth_m",
-    "service_lift_overhead_m",
-    "fireman_lift_pit_depth_m",
-    "fireman_lift_overhead_m",
-]
-for col in int_cols:
-    input_df[col] = pd.to_numeric(input_df[col], errors="coerce").fillna(0).astype(int)
-for col in float_cols:
-    input_df[col] = pd.to_numeric(input_df[col], errors="coerce").fillna(0.0).astype(float)
-
-banks = [LiftBankInput(**row) for row in input_df.to_dict(orient="records")]
-if not banks:
-    st.error("Please enter at least one lift bank.")
-    st.stop()
-
-st.markdown("## 2. Practical Traffic Results - PASS / FAIL")
-result_rows = []
-for bank in banks:
-    for scenario_name, scenario_profile in TRAFFIC_PROFILES.items():
-        if not scenario_is_applicable(bank.building_type, scenario_name):
-            continue
-        for control in ["Conventional", "Destination Control"]:
-            row = run_practical_traffic_check(bank, control, scenario_name)
-            row["Result"] = pass_fail(row, scenario_profile)
-            row["Target Interval (s)"] = scenario_profile["target_interval_s"]
-            row["Target HC (%)"] = scenario_profile["target_hc_percent"]
-            result_rows.append(row)
-
-results_df = pd.DataFrame(result_rows)
-st.dataframe(results_df, use_container_width=True, hide_index=True)
-
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("Total Lift Banks", len(banks))
-k2.metric("Total Lifts", int(input_df["number_of_lifts"].sum()))
-k3.metric("Passed Rows", int((results_df["Result"] == "PASS").sum()))
-k4.metric("Failed Rows", int((results_df["Result"] == "FAIL").sum()))
-
-st.markdown("## 3. Final Recommendation - How to Solve Traffic")
-recommendation_frames = [final_recommendations_for_bank(bank) for bank in banks]
-recommendations_df = pd.concat(recommendation_frames, ignore_index=True) if recommendation_frames else pd.DataFrame()
-st.dataframe(recommendations_df, use_container_width=True, hide_index=True)
-
-st.markdown("## 4. Fireman Lift Practical Check")
-fire_df = pd.DataFrame([fire_lift_practical_check(bank) for bank in banks])
-st.dataframe(fire_df, use_container_width=True, hide_index=True)
-
-st.markdown("## 5. Separate Pit Depth / Overhead Height Check")
-shaft_df = pd.DataFrame([shaft_practical_check(bank) for bank in banks])
-st.dataframe(shaft_df, use_container_width=True, hide_index=True)
-
-st.markdown("## 6. Passenger Simulation")
-selected_bank_name = st.selectbox("Select lift bank for simulation", input_df["bank_name"].tolist())
-selected_bank = next(bank for bank in banks if bank.bank_name == selected_bank_name)
-
-if st.button("Run Practical Simulation", type="primary"):
-    simulator = PracticalElevatorSimulation(selected_bank, TRAFFIC_PROFILES[sim_scenario_name], horizon=int(sim_horizon), seed=int(seed))
-    passenger_df, simulation_summary_df = simulator.run()
-    st.session_state["passenger_df"] = passenger_df
-    st.session_state["simulation_summary_df"] = simulation_summary_df
-
-if "simulation_summary_df" in st.session_state:
-    simulation_summary_df = st.session_state["simulation_summary_df"]
-    passenger_df = st.session_state["passenger_df"]
-    st.subheader("Simulation Summary")
-    st.dataframe(simulation_summary_df, use_container_width=True, hide_index=True)
-    if not passenger_df.empty:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.write("Waiting Time Sample")
-            st.bar_chart(passenger_df["wait_time"].head(300))
-        with c2:
-            st.write("Destination Distribution")
-            dest_counts = passenger_df.groupby("destination")["pid"].count().reset_index(name="passengers")
-            st.bar_chart(dest_counts, x="destination", y="passengers")
-        st.subheader("Passenger Log")
-        st.dataframe(passenger_df.head(500), use_container_width=True, hide_index=True)
-else:
-    simulation_summary_df = None
-    passenger_df = None
-
-st.markdown("## 7. Export")
-
-pdf_bytes = create_pdf_report(project_name, prepared_by, input_df, results_df, recommendations_df, fire_df, shaft_df, simulation_summary_df)
-excel_bytes = build_excel_report(input_df, results_df, recommendations_df, fire_df, shaft_df, simulation_summary_df, passenger_df)
-
-e1, e2, e3 = st.columns(3)
-with e1:
-    st.download_button("Download PDF", data=pdf_bytes, file_name="practical_elevator_traffic_review.pdf", mime="application/pdf", use_container_width=True)
-with e2:
-    st.download_button("Download Excel", data=excel_bytes, file_name="practical_elevator_traffic_review.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-with e3:
-    st.download_button("Download CSV", data=results_df.to_csv(index=False).encode("utf-8-sig"), file_name="practical_traffic_results_pass_fail.csv", mime="text/csv", use_container_width=True)
-
-st.warning(
-    "Practical note: Use this tool for early-stage review, project coordination and option comparison. "
-    "Final lift selection, fireman lift compliance, shaft dimensions and traffic analysis shall be confirmed by the elevator specialist."
-)
+init_state()
+if st.session_state.page == 1:
+    page_header(1); st.title("🏗️ Project Information")
+    project_name=st.text_input("Project Name", value=st.session_state.project_name)
+    project_address=st.text_area("Project Address", value=st.session_state.project_address)
+    prepared_by=st.text_input("Prepared By", value=st.session_state.prepared_by)
+    c1,c2=st.columns(2)
+    with c1:
+        logo_file=st.file_uploader("Upload Company Logo", type=["png","jpg","jpeg"])
+        if logo_file: st.image(logo_file, caption="Company Logo Preview", width=180)
+    with c2:
+        project_photo=st.file_uploader("Upload Project Photo", type=["png","jpg","jpeg"])
+        if project_photo: st.image(project_photo, caption="Project Photo Preview", width=260)
+    if st.button("Next →", type="primary"):
+        st.session_state.project_name=project_name; st.session_state.project_address=project_address; st.session_state.prepared_by=prepared_by
+        if logo_file: st.session_state.logo_bytes=logo_file.getvalue(); st.session_state.logo_name=logo_file.name
+        if project_photo: st.session_state.project_photo_bytes=project_photo.getvalue(); st.session_state.project_photo_name=project_photo.name
+        go_to(2)
+elif st.session_state.page == 2:
+    page_header(2); st.title("🛗 Tower & Lift Engineering Inputs")
+    st.write("Include architectural, population, hardware, door, control/zoning, and pit/overhead data.")
+    column_config={"building_type":st.column_config.SelectboxColumn("building_type", options=BUILDING_TYPES, required=True),"building_grade":st.column_config.SelectboxColumn("building_grade", options=BUILDING_GRADES, required=True),"door_type":st.column_config.SelectboxColumn("door_type", options=DOOR_TYPES, required=True),"zoning_strategy":st.column_config.SelectboxColumn("zoning_strategy", options=ZONING_OPTIONS, required=True)}
+    edited_df=st.data_editor(st.session_state.input_df, num_rows="dynamic", use_container_width=True, hide_index=True, column_config=column_config)
+    c1,c2=st.columns(2)
+    with c1:
+        if st.button("← Back"): st.session_state.input_df=edited_df; go_to(1)
+    with c2:
+        if st.button("Generate Results →", type="primary"): st.session_state.input_df=clean_input_df(edited_df); go_to(3)
+elif st.session_state.page == 3:
+    page_header(3); st.title("📊 Benchmarks, Results & Recommendations")
+    input_df=clean_input_df(st.session_state.input_df); banks=[LiftBankInput(**row) for row in input_df.to_dict(orient="records")]
+    analysis_df=build_analysis_rows(banks); rec_df=build_recommendation_rows(banks); bm_df=build_benchmark_rows(banks)
+    st.subheader("Project"); st.write(f"**Project Name:** {st.session_state.project_name}"); st.write(f"**Address:** {st.session_state.project_address or '-'}"); st.write(f"**Prepared By:** {st.session_state.prepared_by}")
+    if st.session_state.logo_bytes: st.image(st.session_state.logo_bytes, caption="Company Logo", width=150)
+    if st.session_state.project_photo_bytes: st.image(st.session_state.project_photo_bytes, caption="Project Photo", width=300)
+    st.subheader("Benchmark Targets"); st.dataframe(bm_df, use_container_width=True, hide_index=True)
+    st.subheader("Result Recommendations"); st.dataframe(rec_df, use_container_width=True, hide_index=True)
+    st.subheader("Detailed Benchmark Analysis"); st.dataframe(analysis_df, use_container_width=True, hide_index=True)
+    m1,m2,m3=st.columns(3); m1.metric("Total Checks", len(analysis_df)); m2.metric("PASS", int((analysis_df["Result"]=="PASS").sum()) if not analysis_df.empty else 0); m3.metric("FAIL", int((analysis_df["Result"]=="FAIL").sum()) if not analysis_df.empty else 0)
+    excel_buffer=io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+        pd.DataFrame([{"Project Name":st.session_state.project_name,"Address":st.session_state.project_address,"Prepared By":st.session_state.prepared_by}]).to_excel(writer, sheet_name="Project Info", index=False)
+        input_df.to_excel(writer, sheet_name="Inputs", index=False); bm_df.to_excel(writer, sheet_name="Benchmark Targets", index=False); rec_df.to_excel(writer, sheet_name="Recommendations", index=False); analysis_df.to_excel(writer, sheet_name="Detailed Analysis", index=False)
+    excel_buffer.seek(0)
+    pdf_bytes=create_pdf(st.session_state.project_name, st.session_state.project_address, st.session_state.prepared_by, st.session_state.logo_bytes, st.session_state.logo_name, st.session_state.project_photo_bytes, st.session_state.project_photo_name, input_df, analysis_df, rec_df, bm_df)
+    st.subheader("Downloads"); d1,d2,d3=st.columns(3)
+    with d1: st.download_button("Download Excel", data=excel_buffer.getvalue(), file_name="vt_engineering_review.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+    with d2: st.download_button("Download PDF", data=pdf_bytes, file_name="vt_engineering_review.pdf", mime="application/pdf", use_container_width=True)
+    with d3: st.download_button("Download CSV", data=analysis_df.to_csv(index=False).encode("utf-8-sig"), file_name="vt_detailed_analysis.csv", mime="text/csv", use_container_width=True)
+    c1,c2=st.columns(2)
+    with c1:
+        if st.button("← Back to Tower Inputs"): go_to(2)
+    with c2:
+        if st.button("Start New Project"):
+            for key in list(st.session_state.keys()): del st.session_state[key]
+            st.rerun()
+    st.warning("Preliminary benchmark comparison only. Final VT traffic analysis, fire/life-safety compliance and shaft dimensions must be confirmed by the elevator specialist/manufacturer.")
