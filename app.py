@@ -310,12 +310,16 @@ for numfloors in [(50, [8, 10, 12], [10, 6, 4]), (75, [10, 12, 14], [10, 5, 3])]
                                                     person = elevator.queue[elevator.currentfloor - 1].get()
                                                     person.floor = elevator.currentfloor
                                                     elevator.reset()
-                                                    
-                                                    if person.destination == person.floor:
-                                                        Enter_Time.append(person.elevatorTime)
-                                                        Time_Spent_In_Elevator.append(sim_time - person.elevatorTime)
-                                                        Total_Time.append(sim_time - person.arrival)
-                                                        Waiting_Time.append(person.elevatorTime - person.arrival)
-                                                        Destination_Floor.append(person.destination)
-                                                    else:
-                                                        for I in FLOORQUEUES:
+  if person.destination == person.floor:
+    Enter_Time.append(person.elevatorTime)
+    Time_Spent_In_Elevator.append(sim_time - person.elevatorTime)
+    Total_Time.append(sim_time - person.arrival)
+    Waiting_Time.append(person.elevatorTime - person.arrival)
+    Destination_Floor.append(person.destination)
+else:
+    # This block must be indented inside the 'else'
+    for I in FLOORQUEUES:
+        # This block must be indented inside the 'for' loop
+        if I.servicefloor == person.floor and person.destination in I.availablefloors:
+            I.downstairs.put(person)
+            breakEUES:
